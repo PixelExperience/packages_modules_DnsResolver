@@ -180,9 +180,9 @@ TEST_F(TransportTest, IdReuse) {
     DnsTlsTransport transport(SERVER1, MARK, &factory);
     for (int i = 0; i < 100; ++i) {
         // Send a query.
-        std::future<DnsTlsServer::Result> f = transport.query(makeSlice(QUERY));
+        std::future<DnsTlsTransport::Result> f = transport.query(makeSlice(QUERY));
         // Wait for the response.
-        DnsTlsServer::Result r = f.get();
+        DnsTlsTransport::Result r = f.get();
         EXPECT_EQ(DnsTlsTransport::Response::success, r.code);
 
         // All queries should have an observed ID of zero, because it is returned to the ID pool
@@ -887,9 +887,9 @@ TEST(QueryMapTest, Basic) {
     EXPECT_EQ(1, all[1].newId);
     EXPECT_EQ(2, all[2].newId);
 
-    EXPECT_EQ(makeSlice(q0), all[0].query);
-    EXPECT_EQ(makeSlice(q1), all[1].query);
-    EXPECT_EQ(makeSlice(q2), all[2].query);
+    EXPECT_EQ(q0, all[0].query);
+    EXPECT_EQ(q1, all[1].query);
+    EXPECT_EQ(q2, all[2].query);
 
     bytevec a0 = make_query(0, SIZE);
     bytevec a1 = make_query(1, SIZE);

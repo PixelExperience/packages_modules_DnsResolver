@@ -1399,6 +1399,77 @@ TEST_F(ResolverTest, ResolverStats) {
     EXPECT_EQ(1, res_stats[2].successes);
 }
 
+TEST_F(ResolverTest, AlwaysUseLatestSetupParamsInLookups) {
+    constexpr char listen_addr1[] = "127.0.0.3";
+    constexpr char listen_addr2[] = "255.255.255.255";
+    constexpr char listen_addr3[] = "127.0.0.4";
+    constexpr char hostname[] = "hello";
+    constexpr char fqdn_with_search_domain[] = "hello.domain2.com.";
+
+    test::DNSResponder dns1(listen_addr1, test::kDefaultListenService, static_cast<ns_rcode>(-1));
+    dns1.setResponseProbability(0.0);
+    ASSERT_TRUE(dns1.startServer());
+
+    test::DNSResponder dns3(listen_addr3);
+    StartDns(dns3, {{fqdn_with_search_domain, ns_type::ns_t_a, "1.2.3.4"}});
+
+    ResolverParamsParcel parcel = DnsResponderClient::GetDefaultResolverParamsParcel();
+    parcel.tlsServers.clear();
+    parcel.servers = {listen_addr1, listen_addr2};
+    parcel.domains = {"domain1.com", "domain2.com"};
+    ASSERT_TRUE(mDnsClient.SetResolversFromParcel(parcel));
+
+    // Expect the things happening in t1:
+    //   1. The lookup starts using the first domain for query. It sends queries to the populated
+    //      nameserver list {listen_addr1, listen_addr2} for the hostname "hello.domain1.com".
+    //   2. A different list of nameservers is updated to the resolver. Revision ID is incremented.
+    //   3. The query for the hostname times out. The lookup fails to add the timeout record to the
+    //      the stats because of the unmatched revision ID.
+    //   4. The lookup starts using the second domain for query. It sends queries to the populated
+    //      nameserver list {listen_addr3, listen_addr1, listen_addr2} for another hostname
+    //      "hello.domain2.com".
+    //   5. The lookup gets the answer and updates a success record to the stats.
+    std::thread t1([&hostname]() {
+        const addrinfo hints = {.ai_family = AF_INET, .ai_socktype = SOCK_DGRAM};
+        ScopedAddrinfo result = safe_getaddrinfo(hostname, nullptr, &hints);
+        EXPECT_NE(result.get(), nullptr);
+        EXPECT_EQ(ToString(result), "1.2.3.4");
+    });
+
+    // Wait for t1 to start the step 1.
+    while (dns1.queries().size() == 0) {
+        usleep(1000);
+    }
+
+    // Update the resolver with three nameservers. This will increment the revision ID.
+    parcel.servers = {listen_addr3, listen_addr1, listen_addr2};
+    ASSERT_TRUE(mDnsClient.SetResolversFromParcel(parcel));
+
+    t1.join();
+    EXPECT_EQ(0U, GetNumQueriesForType(dns3, ns_type::ns_t_aaaa, fqdn_with_search_domain));
+    EXPECT_EQ(1U, GetNumQueriesForType(dns3, ns_type::ns_t_a, fqdn_with_search_domain));
+
+    std::vector<std::string> res_servers;
+    std::vector<std::string> res_domains;
+    std::vector<std::string> res_tls_servers;
+    res_params res_params;
+    std::vector<ResolverStats> res_stats;
+    int wait_for_pending_req_timeout_count;
+    ASSERT_TRUE(DnsResponderClient::GetResolverInfo(
+            mDnsClient.resolvService(), TEST_NETID, &res_servers, &res_domains, &res_tls_servers,
+            &res_params, &res_stats, &wait_for_pending_req_timeout_count));
+    EXPECT_EQ(res_stats[0].successes, 1);
+    EXPECT_EQ(res_stats[0].timeouts, 0);
+    EXPECT_EQ(res_stats[0].internal_errors, 0);
+    EXPECT_EQ(res_stats[1].successes, 0);
+    EXPECT_EQ(res_stats[1].timeouts, 0);
+    EXPECT_EQ(res_stats[1].internal_errors, 0);
+    EXPECT_EQ(res_stats[2].successes, 0);
+    EXPECT_EQ(res_stats[2].timeouts, 0);
+    EXPECT_EQ(res_stats[2].internal_errors, 0);
+    EXPECT_EQ(res_servers, parcel.servers);
+}
+
 // Test what happens if the specified TLS server is nonexistent.
 TEST_F(ResolverTest, GetHostByName_TlsMissing) {
     constexpr char listen_addr[] = "127.0.0.3";
@@ -2233,6 +2304,52 @@ TEST_F(ResolverTest, Async_CacheFlags) {
     expectAnswersValid(fd1, AF_INET, "1.2.3.5");
     // Expect no cache hit because cache storing is also skipped in previous query.
     EXPECT_EQ(4U, GetNumQueries(dns, another_host_name));
+}
+
+TEST_F(ResolverTest, Async_NoCacheStoreFlagDoesNotRefreshStaleCacheEntry) {
+    constexpr char listen_addr[] = "127.0.0.4";
+    constexpr char host_name[] = "howdy.example.com.";
+    const std::vector<DnsRecord> records = {
+            {host_name, ns_type::ns_t_a, "1.2.3.4"},
+    };
+
+    test::DNSResponder dns(listen_addr);
+    StartDns(dns, records);
+    std::vector<std::string> servers = {listen_addr};
+    ASSERT_TRUE(mDnsClient.SetResolversForNetwork(servers));
+
+    const unsigned SHORT_TTL_SEC = 1;
+    dns.setTtl(SHORT_TTL_SEC);
+
+    // Refer to b/148842821 for the purpose of below test steps.
+    // Basically, this test is used to ensure stale cache case is handled
+    // correctly with ANDROID_RESOLV_NO_CACHE_STORE.
+    int fd = resNetworkQuery(TEST_NETID, "howdy.example.com", ns_c_in, ns_t_a, 0);
+    EXPECT_TRUE(fd != -1);
+    expectAnswersValid(fd, AF_INET, "1.2.3.4");
+
+    EXPECT_EQ(1U, GetNumQueries(dns, host_name));
+    dns.clearQueries();
+
+    // Wait until cache expired
+    sleep(SHORT_TTL_SEC + 0.5);
+
+    // Now request the same hostname again.
+    // We should see a new DNS query because the entry in cache has become stale.
+    // Due to ANDROID_RESOLV_NO_CACHE_STORE, this query must *not* refresh that stale entry.
+    fd = resNetworkQuery(TEST_NETID, "howdy.example.com", ns_c_in, ns_t_a,
+                         ANDROID_RESOLV_NO_CACHE_STORE);
+    EXPECT_TRUE(fd != -1);
+    expectAnswersValid(fd, AF_INET, "1.2.3.4");
+    EXPECT_EQ(1U, GetNumQueries(dns, host_name));
+    dns.clearQueries();
+
+    // If the cache is still stale, we expect to see one more DNS query
+    // (this time the cache will be refreshed, but we're not checking for it).
+    fd = resNetworkQuery(TEST_NETID, "howdy.example.com", ns_c_in, ns_t_a, 0);
+    EXPECT_TRUE(fd != -1);
+    expectAnswersValid(fd, AF_INET, "1.2.3.4");
+    EXPECT_EQ(1U, GetNumQueries(dns, host_name));
 }
 
 TEST_F(ResolverTest, Async_NoRetryFlag) {

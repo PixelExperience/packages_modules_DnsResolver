@@ -94,54 +94,17 @@
 
 void res_init(ResState* statp, const struct android_net_context* _Nonnull netcontext,
               android::net::NetworkDnsEventReported* _Nonnull event) {
-    memset(statp, 0, sizeof *statp);
-
     statp->netid = netcontext->dns_netid;
     statp->uid = netcontext->uid;
     statp->pid = netcontext->pid;
     statp->id = arc4random_uniform(65536);
-    statp->_mark = netcontext->dns_mark;
-    statp->netcontext_flags = netcontext->flags;
-    statp->event = event;
 
+    for (auto& sock : statp->nssocks) {
+        sock.reset();
+    }
     statp->ndots = 1;
-    statp->_vcsock = -1;
-
-    for (int ns = 0; ns < MAXNS; ns++) {
-        statp->nssocks[ns] = -1;
-    }
-
-    // The following dummy initialization is probably useless because
-    // it's overwritten later by resolv_populate_res_for_net().
-    // TODO: check if it's safe to remove.
-    const sockaddr_union u{
-            .sin.sin_addr.s_addr = INADDR_ANY,
-            .sin.sin_family = AF_INET,
-            .sin.sin_port = htons(NAMESERVER_PORT),
-    };
-    memcpy(&statp->nsaddrs, &u, sizeof(u));
-    statp->nscount = 1;
-}
-
-/*
- * This routine is for closing the socket if a virtual circuit is used and
- * the program wants to close it.  This provides support for endhostent()
- * which expects to close the socket.
- *
- * This routine is not expected to be user visible.
- */
-void res_nclose(res_state statp) {
-    int ns;
-
-    if (statp->_vcsock >= 0) {
-        (void) close(statp->_vcsock);
-        statp->_vcsock = -1;
-        statp->_flags &= ~RES_F_VC;
-    }
-    for (ns = 0; ns < MAXNS; ns++) {
-        if (statp->nssocks[ns] != -1) {
-            close(statp->nssocks[ns]);
-            statp->nssocks[ns] = -1;
-        }
-    }
+    statp->_mark = netcontext->dns_mark;
+    statp->tcp_nssock.reset();
+    statp->event = event;
+    statp->netcontext_flags = netcontext->flags;
 }
