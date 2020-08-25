@@ -43,6 +43,8 @@
 #include "hostent.h"
 #include "resolv_private.h"
 
+#include "hosts_cache.h"
+
 constexpr int MAXALIASES = 35;
 constexpr int MAXADDRS = 35;
 
@@ -71,6 +73,11 @@ int _hf_gethtbyname2(const char* name, int af, getnamaddr* info) {
     size_t len, num, i;
     char* aliases[MAXALIASES];
     char* addr_ptrs[MAXADDRS];
+
+    int rc = hc_gethtbyname(name, af, info);
+    if (rc != NETDB_INTERNAL) {
+        return (rc == NETDB_SUCCESS ? 0 : EAI_NODATA);
+    }
 
     FILE* hf = NULL;
     sethostent_r(&hf);

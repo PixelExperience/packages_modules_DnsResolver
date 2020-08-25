@@ -98,6 +98,7 @@ cc_library {
         "getaddrinfo.cpp",
         "gethnamaddr.cpp",
         "sethostent.cpp",
+        "hosts_cache.cpp",
         "res_cache.cpp",
         "res_comp.cpp",
         "res_debug.cpp",
