@@ -184,8 +184,8 @@ class ResolverTest : public ::testing::Test {
         // service.
 
         AIBinder* binder = AServiceManager_getService("dnsresolver");
-        ndk::SpAIBinder resolvBinder = ndk::SpAIBinder(binder);
-        auto resolvService = aidl::android::net::IDnsResolver::fromBinder(resolvBinder);
+        sResolvBinder = ndk::SpAIBinder(binder);
+        auto resolvService = aidl::android::net::IDnsResolver::fromBinder(sResolvBinder);
         ASSERT_NE(nullptr, resolvService.get());
 
         // Subscribe the death recipient to the service IDnsResolver for detecting Netd death.
@@ -371,11 +371,16 @@ class ResolverTest : public ::testing::Test {
     // Use a shared static death recipient to monitor the service death. The static death
     // recipient could monitor the death not only during the test but also between tests.
     static AIBinder_DeathRecipient* sResolvDeathRecipient;  // Initialized in SetUpTestSuite.
+
+    // The linked AIBinder_DeathRecipient will be automatically unlinked if the binder is deleted.
+    // The binder needs to be retained throughout tests.
+    static ndk::SpAIBinder sResolvBinder;
 };
 
 // Initialize static member of class.
 std::shared_ptr<DnsMetricsListener> ResolverTest::sDnsMetricsListener;
 AIBinder_DeathRecipient* ResolverTest::sResolvDeathRecipient;
+ndk::SpAIBinder ResolverTest::sResolvBinder;
 
 TEST_F(ResolverTest, GetHostByName) {
     constexpr char nonexistent_host_name[] = "nonexistent.example.com.";
@@ -2703,6 +2708,54 @@ TEST_F(ResolverTest, Async_VerifyQueryID) {
     EXPECT_EQ(0x0053U, htons(hp->id));
 
     EXPECT_EQ(1U, GetNumQueries(dns, host_name));
+}
+
+// Run a large number of DNS queries through asynchronous API to create
+// thousands of threads in resolver to simulate the failure of thread creation
+// when memory per process is exhausted. (The current critical value is about
+// 84xx threads.)
+TEST_F(ResolverTest, Async_OutOfMemory) {
+    constexpr char host_name[] = "howdy.example.com.";
+    constexpr size_t AMOUNT_OF_UIDS = 40;
+    constexpr size_t MAX_QUERIES_PER_UID = 256;
+    constexpr size_t NUM_OF_QUERIES = AMOUNT_OF_UIDS * MAX_QUERIES_PER_UID;
+
+    test::DNSResponder dns;
+    StartDns(dns, {{host_name, ns_type::ns_t_a, "1.2.3.4"}});
+    ASSERT_TRUE(mDnsClient.SetResolversForNetwork());
+    dns.setDeferredResp(true);
+
+    std::vector<int> fds;
+    fds.reserve(NUM_OF_QUERIES);
+    bool send_query = true;
+    for (size_t i = 0; i < AMOUNT_OF_UIDS && send_query; i++) {
+        ScopedChangeUID scopedChangeUID(TEST_UID - i);
+        for (size_t j = 0; j < MAX_QUERIES_PER_UID; j++) {
+            int fd = resNetworkQuery(TEST_NETID, "howdy.example.com", ns_c_in, ns_t_a, 0);
+            if (fd >= 0) {
+                fds.emplace_back(fd);
+            } else {
+                send_query = false;
+                break;
+            }
+        }
+    }
+
+    dns.setDeferredResp(false);
+    EXPECT_EQ(NUM_OF_QUERIES, fds.size());
+    // TODO: AIBinder_DeathRecipient_new does not work (b/172178636), which
+    // should be fixed. Fortunately, netd crash is still detectable at the point
+    // of DumpResolverService() in TearDown(), where accesses mDnsClient. Also,
+    // the fds size will be less than NUM_OF_QUERIES in that case.
+
+    uint8_t buf[MAXPACKET];
+    int rcode;
+    for (auto fd : fds) {
+        memset(buf, 0, MAXPACKET);
+        getAsyncResponse(fd, &rcode, buf, MAXPACKET);
+        // The results of each DNS query are not examined, since they won't all
+        // succeed or all fail. Here we only focus on netd is crashed or not.
+    }
 }
 
 // This test checks that the resolver should not generate the request containing OPT RR when using
