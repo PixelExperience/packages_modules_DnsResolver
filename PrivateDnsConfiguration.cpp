@@ -28,7 +28,6 @@
 #include "ResolverEventReporter.h"
 #include "netd_resolv/resolv.h"
 #include "netdutils/BackoffSequence.h"
-#include "resolv_cache.h"
 #include "util.h"
 
 using android::base::StringPrintf;
@@ -90,7 +89,6 @@ int PrivateDnsConfiguration::set(int32_t netId, uint32_t mark,
     } else {
         mPrivateDnsModes[netId] = PrivateDnsMode::OFF;
         mPrivateDnsTransports.erase(netId);
-        resolv_stats_set_servers_for_dot(netId, {});
         mPrivateDnsValidateThreads.erase(netId);
         // TODO: As mPrivateDnsValidateThreads is reset, validation threads which haven't yet
         // finished are considered outdated. Consider signaling the outdated validation threads to
@@ -128,7 +126,7 @@ int PrivateDnsConfiguration::set(int32_t netId, uint32_t mark,
         }
     }
 
-    return resolv_stats_set_servers_for_dot(netId, servers);
+    return 0;
 }
 
 PrivateDnsStatus PrivateDnsConfiguration::getStatus(unsigned netId) {
@@ -167,6 +165,8 @@ void PrivateDnsConfiguration::validatePrivateDnsProvider(const DnsTlsServer& ser
     if (!needValidateThread(server, netId)) {
         return;
     }
+
+    maybeNotifyObserver(server, Validation::in_process, netId);
 
     // Note that capturing |server| and |netId| in this lambda create copies.
     std::thread validate_thread([this, server, netId, mark] {
@@ -224,12 +224,14 @@ bool PrivateDnsConfiguration::recordPrivateDnsValidation(const DnsTlsServer& ser
     auto netPair = mPrivateDnsTransports.find(netId);
     if (netPair == mPrivateDnsTransports.end()) {
         LOG(WARNING) << "netId " << netId << " was erased during private DNS validation";
+        maybeNotifyObserver(server, Validation::fail, netId);
         return DONT_REEVALUATE;
     }
 
     const auto mode = mPrivateDnsModes.find(netId);
     if (mode == mPrivateDnsModes.end()) {
         LOG(WARNING) << "netId " << netId << " has no private DNS validation mode";
+        maybeNotifyObserver(server, Validation::fail, netId);
         return DONT_REEVALUATE;
     }
     const bool modeDoesReevaluation = (mode->second == PrivateDnsMode::STRICT);
@@ -272,12 +274,17 @@ bool PrivateDnsConfiguration::recordPrivateDnsValidation(const DnsTlsServer& ser
 
     if (success) {
         tracker[server] = Validation::success;
+        maybeNotifyObserver(server, Validation::success, netId);
     } else {
         // Validation failure is expected if a user is on a captive portal.
         // TODO: Trigger a second validation attempt after captive portal login
         // succeeds.
         tracker[server] = (reevaluationStatus == NEEDS_REEVALUATION) ? Validation::in_process
                                                                      : Validation::fail;
+        maybeNotifyObserver(server,
+                            (reevaluationStatus == NEEDS_REEVALUATION) ? Validation::in_process
+                                                                       : Validation::fail,
+                            netId);
     }
     LOG(WARNING) << "Validation " << (success ? "success" : "failed");
 
@@ -336,6 +343,18 @@ bool PrivateDnsConfiguration::needsValidation(const PrivateDnsTracker& tracker,
                                               const DnsTlsServer& server) {
     const auto& iter = tracker.find(server);
     return (iter == tracker.end()) || (iter->second == Validation::fail);
+}
+
+void PrivateDnsConfiguration::setObserver(Observer* observer) {
+    std::lock_guard guard(mPrivateDnsLock);
+    mObserver = observer;
+}
+
+void PrivateDnsConfiguration::maybeNotifyObserver(const DnsTlsServer& server, Validation validation,
+                                                  uint32_t netId) const {
+    if (mObserver) {
+        mObserver->onValidationStateUpdate(addrToString(&server.ss), validation, netId);
+    }
 }
 
 }  // namespace net
