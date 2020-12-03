@@ -22,8 +22,6 @@
 #include <string>
 #include <vector>
 
-#include <netdb.h>
-
 #include <aidl/android/net/IDnsResolver.h>
 #include <android-base/logging.h>
 #include <android-base/strings.h>
@@ -46,13 +44,6 @@ namespace net {
 
 namespace {
 
-std::string addrToString(const sockaddr_storage* addr) {
-    char out[INET6_ADDRSTRLEN] = {0};
-    getnameinfo((const sockaddr*)addr, sizeof(sockaddr_storage), out, INET6_ADDRSTRLEN, nullptr, 0,
-                NI_NUMERICHOST);
-    return std::string(out);
-}
-
 const char* getPrivateDnsModeString(PrivateDnsMode mode) {
     switch (mode) {
         case PrivateDnsMode::OFF:
@@ -70,6 +61,8 @@ constexpr const char* validationStatusToString(Validation value) {
             return "in_process";
         case Validation::success:
             return "success";
+        case Validation::success_but_expired:
+            return "success_but_expired";
         case Validation::fail:
             return "fail";
         case Validation::unknown_server:
@@ -263,8 +256,8 @@ int ResolverController::getResolverInfo(int32_t netId, std::vector<std::string>*
     ResolverStats::encodeAll(res_stats, stats);
 
     const auto privateDnsStatus = PrivateDnsConfiguration::getInstance().getStatus(netId);
-    for (const auto& pair : privateDnsStatus.serversMap) {
-        tlsServers->push_back(addrToString(&pair.first.ss));
+    for (const auto& [server, _] : privateDnsStatus.serversMap) {
+        tlsServers->push_back(server.toIpString());
     }
 
     params->resize(IDnsResolver::RESOLVER_PARAMS_COUNT);
@@ -363,9 +356,9 @@ void ResolverController::dump(DumpWriter& dw, unsigned netId) {
             dw.println("Private DNS configuration (%u entries)",
                        static_cast<uint32_t>(privateDnsStatus.serversMap.size()));
             dw.incIndent();
-            for (const auto& pair : privateDnsStatus.serversMap) {
-                dw.println("%s name{%s} status{%s}", addrToString(&pair.first.ss).c_str(),
-                           pair.first.name.c_str(), validationStatusToString(pair.second));
+            for (const auto& [server, validation] : privateDnsStatus.serversMap) {
+                dw.println("%s name{%s} status{%s}", server.toIpString().c_str(),
+                           server.name.c_str(), validationStatusToString(validation));
             }
             dw.decIndent();
         }

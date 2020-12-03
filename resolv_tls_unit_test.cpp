@@ -800,6 +800,18 @@ void checkUnequal(const DnsTlsServer& s1, const DnsTlsServer& s2) {
     EXPECT_FALSE(s2 == s1);
 }
 
+void checkEqual(const DnsTlsServer& s1, const DnsTlsServer& s2) {
+    EXPECT_TRUE(s1 == s1);
+    EXPECT_TRUE(s2 == s2);
+    EXPECT_TRUE(isAddressEqual(s1, s1));
+    EXPECT_TRUE(isAddressEqual(s2, s2));
+
+    EXPECT_FALSE(s1 < s2);
+    EXPECT_FALSE(s2 < s1);
+    EXPECT_TRUE(s1 == s2);
+    EXPECT_TRUE(s2 == s1);
+}
+
 class ServerTest : public BaseTest {};
 
 TEST_F(ServerTest, IPv4) {
@@ -850,12 +862,16 @@ TEST_F(ServerTest, Port) {
     parseServer("192.0.2.1", 854, &s2.ss);
     checkUnequal(s1, s2);
     EXPECT_TRUE(isAddressEqual(s1, s2));
+    EXPECT_EQ(s1.toIpString(), "192.0.2.1");
+    EXPECT_EQ(s2.toIpString(), "192.0.2.1");
 
     DnsTlsServer s3, s4;
     parseServer("2001:db8::1", 853, &s3.ss);
     parseServer("2001:db8::1", 852, &s4.ss);
     checkUnequal(s3, s4);
     EXPECT_TRUE(isAddressEqual(s3, s4));
+    EXPECT_EQ(s3.toIpString(), "2001:db8::1");
+    EXPECT_EQ(s4.toIpString(), "2001:db8::1");
 
     EXPECT_FALSE(s1.wasExplicitlyConfigured());
     EXPECT_FALSE(s2.wasExplicitlyConfigured());
@@ -871,6 +887,24 @@ TEST_F(ServerTest, Name) {
 
     EXPECT_TRUE(s1.wasExplicitlyConfigured());
     EXPECT_TRUE(s2.wasExplicitlyConfigured());
+}
+
+TEST_F(ServerTest, State) {
+    DnsTlsServer s1(V4ADDR1), s2(V4ADDR1);
+    checkEqual(s1, s2);
+    s1.setValidationState(Validation::success);
+    checkEqual(s1, s2);
+    s2.setValidationState(Validation::fail);
+    checkEqual(s1, s2);
+    s1.setActive(true);
+    checkEqual(s1, s2);
+    s2.setActive(false);
+    checkEqual(s1, s2);
+
+    EXPECT_EQ(s1.validationState(), Validation::success);
+    EXPECT_EQ(s2.validationState(), Validation::fail);
+    EXPECT_TRUE(s1.active());
+    EXPECT_FALSE(s2.active());
 }
 
 TEST(QueryMapTest, Basic) {
