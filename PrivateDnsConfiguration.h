@@ -25,12 +25,10 @@
 #include <netdutils/InternetAddresses.h>
 
 #include "DnsTlsServer.h"
+#include "PrivateDnsValidationObserver.h"
 
 namespace android {
 namespace net {
-
-// The DNS over TLS mode on a specific netId.
-enum class PrivateDnsMode : uint8_t { OFF, OPPORTUNISTIC, STRICT };
 
 struct PrivateDnsStatus {
     PrivateDnsMode mode;
@@ -65,6 +63,11 @@ class PrivateDnsConfiguration {
 
     void clear(unsigned netId) EXCLUDES(mPrivateDnsLock);
 
+    // Request |server| to be revalidated on a connection tagged with |mark|.
+    // Return true if the request is accepted; otherwise, return false.
+    bool requestValidation(unsigned netId, const DnsTlsServer& server, uint32_t mark)
+            EXCLUDES(mPrivateDnsLock);
+
     struct ServerIdentity {
         const netdutils::IPAddress ip;
         const std::string name;
@@ -83,14 +86,15 @@ class PrivateDnsConfiguration {
         }
     };
 
+    void setObserver(PrivateDnsValidationObserver* observer);
+
   private:
     typedef std::map<ServerIdentity, DnsTlsServer> PrivateDnsTracker;
     typedef std::set<DnsTlsServer, AddressComparator> ThreadTracker;
 
     PrivateDnsConfiguration() = default;
 
-    void startValidation(const DnsTlsServer& server, unsigned netId, uint32_t mark)
-            REQUIRES(mPrivateDnsLock);
+    void startValidation(const DnsTlsServer& server, unsigned netId) REQUIRES(mPrivateDnsLock);
 
     bool recordPrivateDnsValidation(const DnsTlsServer& server, unsigned netId, bool success)
             EXCLUDES(mPrivateDnsLock);
@@ -112,24 +116,11 @@ class PrivateDnsConfiguration {
     // Any pending validation threads will continue running because we have no way to cancel them.
     std::map<unsigned, PrivateDnsTracker> mPrivateDnsTransports GUARDED_BY(mPrivateDnsLock);
 
-    // For testing. The observer is notified of onValidationStateUpdate 1) when a validation is
-    // about to begin or 2) when a validation finishes. If a validation finishes when in OFF mode
-    // or when the network has been destroyed, |validation| will be Validation::fail.
-    // WARNING: The Observer is notified while the lock is being held. Be careful not to call
-    // any method of PrivateDnsConfiguration from the observer.
+    void notifyValidationStateUpdate(const std::string& serverIp, Validation validation,
+                                     uint32_t netId) const REQUIRES(mPrivateDnsLock);
+
     // TODO: fix the reentrancy problem.
-    class Observer {
-      public:
-        virtual ~Observer(){};
-        virtual void onValidationStateUpdate(const std::string& serverIp, Validation validation,
-                                             uint32_t netId) = 0;
-    };
-
-    void setObserver(Observer* observer);
-    void maybeNotifyObserver(const std::string& serverIp, Validation validation,
-                             uint32_t netId) const REQUIRES(mPrivateDnsLock);
-
-    Observer* mObserver GUARDED_BY(mPrivateDnsLock);
+    PrivateDnsValidationObserver* mObserver GUARDED_BY(mPrivateDnsLock);
 
     friend class PrivateDnsConfigurationTest;
 };

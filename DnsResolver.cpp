@@ -20,6 +20,8 @@
 
 #include "DnsProxyListener.h"
 #include "DnsResolverService.h"
+#include "DnsTlsDispatcher.h"
+#include "PrivateDnsConfiguration.h"
 #include "netd_resolv/resolv.h"
 #include "res_debug.h"
 #include "util.h"
@@ -28,7 +30,8 @@ bool resolv_init(const ResolverNetdCallbacks* callbacks) {
     android::base::InitLogging(/*argv=*/nullptr);
     android::base::SetDefaultTag("libnetd_resolv");
     LOG(INFO) << __func__ << ": Initializing resolver";
-    resolv_set_log_severity(android::base::WARNING);
+    // TODO(b/170539625): restore log level to WARNING after clarifying flaky tests.
+    resolv_set_log_severity(isUserDebugBuild() ? android::base::DEBUG : android::base::WARNING);
     using android::net::gApiLevel;
     gApiLevel = getApiLevel();
     using android::net::gResNetdCallbacks;
@@ -70,6 +73,14 @@ DnsResolver* DnsResolver::getInstance() {
     // Instantiated on first use.
     static DnsResolver instance;
     return &instance;
+}
+
+DnsResolver::DnsResolver() {
+    // TODO: make them member variables after fixing the circular dependency:
+    //   DnsTlsDispatcher.h -> resolv_private.h -> DnsResolver.h -> DnsTlsDispatcher.h
+    auto& dnsTlsDispatcher = DnsTlsDispatcher::getInstance();
+    auto& privateDnsConfiguration = PrivateDnsConfiguration::getInstance();
+    privateDnsConfiguration.setObserver(&dnsTlsDispatcher);
 }
 
 bool DnsResolver::start() {
