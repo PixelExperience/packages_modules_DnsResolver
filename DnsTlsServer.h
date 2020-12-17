@@ -24,18 +24,10 @@
 
 #include <params.h>
 
+#include "PrivateDnsCommon.h"
+
 namespace android {
 namespace net {
-
-// Validation status of a DNS over TLS server (on a specific netId).
-enum class Validation : uint8_t {
-    in_process,
-    success,
-    success_but_expired,
-    fail,
-    unknown_server,
-    unknown_netid,
-};
 
 // DnsTlsServer represents a recursive resolver that supports, or may support, a
 // secure protocol.
@@ -73,6 +65,12 @@ struct DnsTlsServer {
 
     Validation validationState() const { return mValidation; }
     void setValidationState(Validation val) { mValidation = val; }
+
+    // The socket mark used for validation.
+    // Note that the mark of a connection to which the DnsResolver sends app's DNS requests can
+    // be different.
+    // TODO: make it const.
+    uint32_t mark = 0;
 
     // Return whether or not the server can be used for a network. It depends on
     // the resolver configuration.
