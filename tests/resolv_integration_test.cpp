@@ -27,7 +27,6 @@
 #include <arpa/inet.h>
 #include <arpa/nameser.h>
 #include <binder/ProcessState.h>
-#include <bpf/BpfUtils.h>
 #include <cutils/sockets.h>
 #include <gmock/gmock-matchers.h>
 #include <gtest/gtest.h>
@@ -72,6 +71,7 @@
 #include "tests/dns_responder/dns_tls_frontend.h"
 #include "tests/resolv_test_utils.h"
 #include "tests/tun_forwarder.h"
+#include "tests/unsolicited_listener/unsolicited_event_listener.h"
 
 // Valid VPN netId range is 100 ~ 65535
 constexpr int TEST_VPN_NETID = 65502;
@@ -95,6 +95,8 @@ using aidl::android::net::IDnsResolver;
 using aidl::android::net::INetd;
 using aidl::android::net::ResolverParamsParcel;
 using aidl::android::net::metrics::INetdEventListener;
+using aidl::android::net::resolv::aidl::IDnsResolverUnsolicitedEventListener;
+using aidl::android::net::resolv::aidl::PrivateDnsValidationEventParcel;
 using android::base::Error;
 using android::base::ParseInt;
 using android::base::Result;
@@ -103,6 +105,7 @@ using android::base::unique_fd;
 using android::net::ResolverStats;
 using android::net::TunForwarder;
 using android::net::metrics::DnsMetricsListener;
+using android::net::resolv::aidl::UnsolicitedEventListener;
 using android::netdutils::enableSockopt;
 using android::netdutils::makeSlice;
 using android::netdutils::ResponseCode;
@@ -205,6 +208,12 @@ class ResolverTest : public ::testing::Test {
                 TEST_NETID /*monitor specific network*/);
         ASSERT_TRUE(resolvService->registerEventListener(sDnsMetricsListener).isOk());
 
+        // Subscribe the unsolicited event listener for verifying unsolicited event contents.
+        sUnsolicitedEventListener = ndk::SharedRefBase::make<UnsolicitedEventListener>(
+                TEST_NETID /*monitor specific network*/);
+        ASSERT_TRUE(
+                resolvService->registerUnsolicitedEventListener(sUnsolicitedEventListener).isOk());
+
         // Start the binder thread pool for listening DNS metrics events and receiving death
         // recipient.
         ABinderProcess_startThreadPool();
@@ -215,6 +224,7 @@ class ResolverTest : public ::testing::Test {
     void SetUp() {
         mDnsClient.SetUp();
         sDnsMetricsListener->reset();
+        sUnsolicitedEventListener->reset();
     }
 
     void TearDown() {
@@ -252,11 +262,16 @@ class ResolverTest : public ::testing::Test {
     }
 
     bool WaitForPrivateDnsValidation(std::string serverAddr, bool validated) {
-        return sDnsMetricsListener->waitForPrivateDnsValidation(serverAddr, validated);
+        return sDnsMetricsListener->waitForPrivateDnsValidation(serverAddr, validated) &&
+               sUnsolicitedEventListener->waitForPrivateDnsValidation(
+                       serverAddr,
+                       validated ? IDnsResolverUnsolicitedEventListener::VALIDATION_RESULT_SUCCESS
+                                 : IDnsResolverUnsolicitedEventListener::VALIDATION_RESULT_FAILURE);
     }
 
     bool hasUncaughtPrivateDnsValidation(const std::string& serverAddr) {
-        return sDnsMetricsListener->findValidationRecord(serverAddr);
+        return sDnsMetricsListener->findValidationRecord(serverAddr) &&
+               sUnsolicitedEventListener->findValidationRecord(serverAddr);
     }
 
     void ExpectDnsEvent(int32_t eventType, int32_t returnCode, const std::string& hostname,
@@ -367,6 +382,9 @@ class ResolverTest : public ::testing::Test {
     // could be terminated earlier.
     static std::shared_ptr<DnsMetricsListener>
             sDnsMetricsListener;  // Initialized in SetUpTestSuite.
+
+    inline static std::shared_ptr<UnsolicitedEventListener>
+            sUnsolicitedEventListener;  // Initialized in SetUpTestSuite.
 
     // Use a shared static death recipient to monitor the service death. The static death
     // recipient could monitor the death not only during the test but also between tests.
@@ -4161,10 +4179,6 @@ TEST_F(ResolverTest, getDnsNetId) {
 }
 
 TEST_F(ResolverTest, BlockDnsQueryWithUidRule) {
-    // This test relies on blocking traffic on loopback, which xt_qtaguid does not do.
-    // See aosp/358413 and b/34444781 for why.
-    SKIP_IF_BPF_NOT_SUPPORTED;
-
     constexpr char listen_addr1[] = "127.0.0.4";
     constexpr char listen_addr2[] = "::1";
     constexpr char host_name[] = "howdy.example.com.";
@@ -4212,8 +4226,6 @@ TEST_F(ResolverTest, BlockDnsQueryWithUidRule) {
 }
 
 TEST_F(ResolverTest, EnforceDnsUid) {
-    SKIP_IF_BPF_NOT_SUPPORTED;
-
     constexpr char listen_addr1[] = "127.0.0.4";
     constexpr char listen_addr2[] = "::1";
     constexpr char host_name[] = "howdy.example.com.";
@@ -5370,10 +5382,6 @@ TEST_F(ResolverTest, GetAddrInfoParallelLookupSleepTime) {
 }
 
 TEST_F(ResolverTest, BlockDnsQueryUidDoesNotLeadToBadServer) {
-    // This test relies on blocking traffic on loopback, which xt_qtaguid does not do.
-    // See aosp/358413 and b/34444781 for why.
-    SKIP_IF_BPF_NOT_SUPPORTED;
-
     constexpr char listen_addr1[] = "127.0.0.4";
     constexpr char listen_addr2[] = "::1";
     test::DNSResponder dns1(listen_addr1);
@@ -5423,8 +5431,6 @@ TEST_F(ResolverTest, DnsServerSelection) {
     StartDns(dns2, {{kHelloExampleCom, ns_type::ns_t_a, kHelloExampleComAddrV4}});
     StartDns(dns3, {{kHelloExampleCom, ns_type::ns_t_a, kHelloExampleComAddrV4}});
 
-    ScopedSystemProperties scopedSystemProperties(kSortNameserversFlag, "1");
-
     // NOTE: the servers must be sorted alphabetically.
     std::vector<std::string> serverList = {
             dns1.listen_address(),
@@ -5436,6 +5442,9 @@ TEST_F(ResolverTest, DnsServerSelection) {
         SCOPED_TRACE(fmt::format("testConfig: [{}]", fmt::join(serverList, ", ")));
         const int queryNum = 50;
         int64_t accumulatedTime = 0;
+
+        // The flag can be reset any time. It's better to re-setup the flag in each iteration.
+        ScopedSystemProperties scopedSystemProperties(kSortNameserversFlag, "1");
 
         // Restart the testing network to 1) make the flag take effect and 2) reset the statistics.
         resetNetwork();
@@ -6003,7 +6012,6 @@ TEST_F(ResolverMultinetworkTest, OneCachePerNetwork) {
 
 TEST_F(ResolverMultinetworkTest, DnsWithVpn) {
     SKIP_IF_REMOTE_VERSION_LESS_THAN(mDnsClient.resolvService(), 4);
-    SKIP_IF_BPF_NOT_SUPPORTED;
     constexpr char host_name[] = "ohayou.example.com.";
     constexpr char ipv4_addr[] = "192.0.2.0";
     constexpr char ipv6_addr[] = "2001:db8:cafe:d00d::31";
