@@ -165,7 +165,6 @@ cc_test {
     ],
     static_libs: [
         "dnsresolver_aidl_interface-unstable-ndk_platform",
-        "libbpf_android",
         "libcrypto_static",
         "libgmock",
         "libnetd_test_dnsresponder_ndk",
@@ -177,6 +176,7 @@ cc_test {
         "netd_aidl_interface-ndk_platform",
         "netd_event_listener_interface-unstable-ndk_platform",
         "libipchecksum",
+        "resolv_unsolicited_listener",
     ],
     // This test talks to the DnsResolver module over a binary protocol on a socket, so keep it as
     // multilib setting is worth because we might be able to get some coverage for the case where
@@ -214,7 +214,10 @@ cc_test {
     ],
     defaults: ["netd_defaults", "resolv_test_defaults"],
     test_suites: ["general-tests"],
-    test_mainline_modules: ["CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex"],
+    test_mainline_modules: [
+        "CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex",
+        "CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex"
+    ],
     static_libs: [
         "libgmock",
         "libprotobuf-cpp-lite",
