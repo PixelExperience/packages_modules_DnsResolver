@@ -280,14 +280,14 @@ bool PrivateDnsConfiguration::recordPrivateDnsValidation(const DnsTlsServer& ser
     auto netPair = mPrivateDnsTransports.find(netId);
     if (netPair == mPrivateDnsTransports.end()) {
         LOG(WARNING) << "netId " << netId << " was erased during private DNS validation";
-        notifyValidationStateUpdate(identity.ip.toString(), Validation::fail, netId);
+        notifyValidationStateUpdate(identity.sockaddr, Validation::fail, netId);
         return DONT_REEVALUATE;
     }
 
     const auto mode = mPrivateDnsModes.find(netId);
     if (mode == mPrivateDnsModes.end()) {
         LOG(WARNING) << "netId " << netId << " has no private DNS validation mode";
-        notifyValidationStateUpdate(identity.ip.toString(), Validation::fail, netId);
+        notifyValidationStateUpdate(identity.sockaddr, Validation::fail, netId);
         return DONT_REEVALUATE;
     }
 
@@ -308,8 +308,6 @@ bool PrivateDnsConfiguration::recordPrivateDnsValidation(const DnsTlsServer& ser
         success = false;
         reevaluationStatus = DONT_REEVALUATE;
     } else if (!(serverPair->second == server)) {
-        // TODO: It doesn't seem correct to overwrite the tracker entry for
-        // |server| down below in this circumstance... Fix this.
         LOG(WARNING) << "Server " << server.toIpString()
                      << " was changed during private DNS validation";
         success = false;
@@ -342,18 +340,18 @@ void PrivateDnsConfiguration::updateServerState(const ServerIdentity& identity, 
                                                 uint32_t netId) {
     auto netPair = mPrivateDnsTransports.find(netId);
     if (netPair == mPrivateDnsTransports.end()) {
-        notifyValidationStateUpdate(identity.ip.toString(), Validation::fail, netId);
+        notifyValidationStateUpdate(identity.sockaddr, Validation::fail, netId);
         return;
     }
 
     auto& tracker = netPair->second;
     if (tracker.find(identity) == tracker.end()) {
-        notifyValidationStateUpdate(identity.ip.toString(), Validation::fail, netId);
+        notifyValidationStateUpdate(identity.sockaddr, Validation::fail, netId);
         return;
     }
 
     tracker[identity].setValidationState(state);
-    notifyValidationStateUpdate(identity.ip.toString(), state, netId);
+    notifyValidationStateUpdate(identity.sockaddr, state, netId);
 
     RecordEntry record(netId, identity, state);
     mPrivateDnsLog.push(std::move(record));
@@ -380,11 +378,11 @@ void PrivateDnsConfiguration::setObserver(PrivateDnsValidationObserver* observer
     mObserver = observer;
 }
 
-void PrivateDnsConfiguration::notifyValidationStateUpdate(const std::string& serverIp,
+void PrivateDnsConfiguration::notifyValidationStateUpdate(const netdutils::IPSockAddr& sockaddr,
                                                           Validation validation,
                                                           uint32_t netId) const {
     if (mObserver) {
-        mObserver->onValidationStateUpdate(serverIp, validation, netId);
+        mObserver->onValidationStateUpdate(sockaddr.ip().toString(), validation, netId);
     }
 }
 
@@ -393,10 +391,10 @@ void PrivateDnsConfiguration::dump(netdutils::DumpWriter& dw) const {
     netdutils::ScopedIndent indentStats(dw);
 
     for (const auto& record : mPrivateDnsLog.copy()) {
-        dw.println(fmt::format("{} - netId={} PrivateDns={{{}/{}}} state={}",
-                               timestampToString(record.timestamp), record.netId,
-                               record.serverIdentity.ip.toString(), record.serverIdentity.name,
-                               validationStatusToString(record.state)));
+        dw.println(fmt::format(
+                "{} - netId={} PrivateDns={{{}/{}}} state={}", timestampToString(record.timestamp),
+                record.netId, record.serverIdentity.sockaddr.toString(),
+                record.serverIdentity.provider, validationStatusToString(record.state)));
     }
     dw.blankline();
 }
