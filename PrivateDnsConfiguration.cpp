@@ -38,30 +38,13 @@ using aidl::android::net::resolv::aidl::IDnsResolverUnsolicitedEventListener;
 using aidl::android::net::resolv::aidl::PrivateDnsValidationEventParcel;
 using android::base::StringPrintf;
 using android::netdutils::IPAddress;
+using android::netdutils::IPSockAddr;
 using android::netdutils::setThreadName;
 using android::netdutils::Slice;
 using std::chrono::milliseconds;
 
 namespace android {
 namespace net {
-
-bool parseServer(const char* server, sockaddr_storage* parsed) {
-    addrinfo hints = {
-            .ai_flags = AI_NUMERICHOST | AI_NUMERICSERV,
-            .ai_family = AF_UNSPEC,
-    };
-    addrinfo* res;
-
-    int err = getaddrinfo(server, "853", &hints, &res);
-    if (err != 0) {
-        LOG(WARNING) << "Failed to parse server address (" << server << "): " << gai_strerror(err);
-        return false;
-    }
-
-    memcpy(parsed, res->ai_addr, res->ai_addrlen);
-    freeaddrinfo(res);
-    return true;
-}
 
 int PrivateDnsConfiguration::set(int32_t netId, uint32_t mark,
                                  const std::vector<std::string>& servers, const std::string& name,
@@ -72,11 +55,13 @@ int PrivateDnsConfiguration::set(int32_t netId, uint32_t mark,
     // Parse the list of servers that has been passed in
     PrivateDnsTracker tmp;
     for (const auto& s : servers) {
-        sockaddr_storage parsed;
-        if (!parseServer(s.c_str(), &parsed)) {
+        IPAddress ip;
+        if (!IPAddress::forString(s, &ip)) {
+            LOG(WARNING) << "Failed to parse server address (" << s << ")";
             return -EINVAL;
         }
-        auto server = std::make_unique<DnsTlsServer>(parsed);
+
+        auto server = std::make_unique<DnsTlsServer>(ip);
         server->name = name;
         server->certificate = caCert;
         server->mark = mark;
@@ -471,11 +456,13 @@ int PrivateDnsConfiguration::setDoh(int32_t netId, uint32_t mark,
         RecordEntry record(netId, {netdutils::IPSockAddr::toIPSockAddr(dohId.ipAddr, 443), name},
                            dohId.status);
         mPrivateDnsLog.push(std::move(record));
+        LOG(INFO) << __func__ << ": Upgrading server to DoH: " << name;
+
         return doh_net_new(mDohDispatcher, netId, dohId.httpsTemplate.c_str(), dohId.host.c_str(),
                            dohId.ipAddr.c_str(), mark, caCert.c_str(), 3000);
     }
 
-    LOG(INFO) << __func__ << "No suitable DoH server found";
+    LOG(INFO) << __func__ << ": No suitable DoH server found";
     return 0;
 }
 
@@ -499,12 +486,12 @@ ssize_t PrivateDnsConfiguration::dohQuery(unsigned netId, const Slice query, con
 
 void PrivateDnsConfiguration::onDohStatusUpdate(uint32_t netId, bool success, const char* ipAddr,
                                                 const char* host) {
-    LOG(INFO) << __func__ << netId << ", " << success << ", " << ipAddr << ", " << host;
+    LOG(INFO) << __func__ << ": " << netId << ", " << success << ", " << ipAddr << ", " << host;
     std::lock_guard guard(mPrivateDnsLock);
     // Update the server status.
     auto it = mDohTracker.find(netId);
     if (it == mDohTracker.end() || (it->second.ipAddr != ipAddr && it->second.host != host)) {
-        LOG(WARNING) << __func__ << "obsolete event";
+        LOG(WARNING) << __func__ << ": Obsolete event";
         return;
     }
     Validation status = success ? Validation::success : Validation::fail;
@@ -535,8 +522,8 @@ bool PrivateDnsConfiguration::needReportEvent(uint32_t netId, ServerIdentity ide
                     (identity.sockaddr.port() != id.sockaddr.port()) &&
                     (server->validationState() == Validation::success)) {
                     LOG(DEBUG) << __func__
-                               << "skip reporting DoH validation failure event, server addr: " +
-                                          identity.sockaddr.ip().toString();
+                               << ": Skip reporting DoH validation failure event, server addr: "
+                               << identity.sockaddr.ip().toString();
                     return false;
                 }
             }
@@ -548,8 +535,8 @@ bool PrivateDnsConfiguration::needReportEvent(uint32_t netId, ServerIdentity ide
             if (it == mDohTracker.end()) return true;
             if (it->second == identity && it->second.status == Validation::success) {
                 LOG(DEBUG) << __func__
-                           << "skip reporting DoT validation failure event, server addr: " +
-                                      identity.sockaddr.ip().toString();
+                           << ": Skip reporting DoT validation failure event, server addr: "
+                           << identity.sockaddr.ip().toString();
                 return false;
             }
             break;
