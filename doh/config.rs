@@ -27,7 +27,8 @@
 use quiche::{h3, Result};
 use std::collections::HashMap;
 use std::ops::DerefMut;
-use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::sync::{Arc, RwLock, Weak};
+use tokio::sync::Mutex;
 
 type WeakConfig = Weak<Mutex<quiche::Config>>;
 
@@ -41,7 +42,7 @@ const MAX_CONCURRENT_STREAM_SIZE: u64 = 100;
 /// Maximum datagram size we will accept.
 pub const MAX_DATAGRAM_SIZE: usize = 1350;
 /// How long with no packets before we assume a connection is dead, in milliseconds.
-pub const QUICHE_IDLE_TIMEOUT_MS: u64 = 180000;
+pub const QUICHE_IDLE_TIMEOUT_MS: u64 = 55000;
 
 impl Config {
     fn from_weak(weak: &WeakConfig) -> Option<Self> {
@@ -80,8 +81,8 @@ impl Config {
 
     /// Take the underlying config, usable as `&mut quiche::Config` for use
     /// with `quiche::connect`.
-    pub fn take(&mut self) -> impl DerefMut<Target = quiche::Config> + '_ {
-        self.0.lock().unwrap()
+    pub async fn take(&mut self) -> impl DerefMut<Target = quiche::Config> + '_ {
+        self.0.lock().await
     }
 }
 
@@ -229,11 +230,11 @@ fn lifetimes() {
     assert_eq!(cache.state.read().unwrap().path_to_config.len(), 2);
 }
 
-#[test]
-fn quiche_connect() {
+#[tokio::test]
+async fn quiche_connect() {
     use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
     let mut config = Config::from_cert_path(None).unwrap();
     let socket_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 42));
     let conn_id = quiche::ConnectionId::from_ref(&[]);
-    quiche::connect(None, &conn_id, socket_addr, &mut config.take()).unwrap();
+    quiche::connect(None, &conn_id, socket_addr, config.take().await.deref_mut()).unwrap();
 }
