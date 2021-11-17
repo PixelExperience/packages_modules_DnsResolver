@@ -207,7 +207,7 @@ class PrivateDnsConfiguration {
         std::set<std::string> ips;
         std::string host;
         std::string httpsTemplate;
-        bool forTesting;
+        bool requireRootPermission;
         base::Result<DohIdentity> getDohIdentity(const std::vector<std::string>& ips,
                                                  const std::string& host) const {
             if (!host.empty() && this->host != host) return Errorf("host {} not matched", host);
@@ -223,7 +223,7 @@ class PrivateDnsConfiguration {
 
     // TODO: Move below DoH relevant stuff into Rust implementation.
     std::map<unsigned, DohIdentity> mDohTracker GUARDED_BY(mPrivateDnsLock);
-    std::array<DohProviderEntry, 3> mAvailableDoHProviders = {{
+    std::array<DohProviderEntry, 4> mAvailableDoHProviders = {{
             {"Google",
              {"2001:4860:4860::8888", "2001:4860:4860::8844", "8.8.8.8", "8.8.4.4"},
              "dns.google",
@@ -235,12 +235,19 @@ class PrivateDnsConfiguration {
              "https://cloudflare-dns.com/dns-query",
              false},
 
-            // The DoH provider for testing.
+            // The DoH providers for testing only.
+            // Using ResolverTestProvider requires that the DnsResolver is configured by someone
+            // who has root permission, which should be run by tests only.
             {"ResolverTestProvider",
              {"127.0.0.3", "::1"},
              "example.com",
              "https://example.com/dns-query",
              true},
+            {"AndroidTesting",
+             {"192.0.2.100"},
+             "dns.androidtesting.org",
+             "https://dns.androidtesting.org/dns-query",
+             false},
     }};
 
     struct RecordEntry {
