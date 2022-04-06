@@ -55,11 +55,7 @@ inline uint64_t getApiLevel() {
     return std::max(buildVersionSdk + !!buildVersionPreviewSdk, firstApiLevel);
 }
 
-// It's the identical strategy as frameworks/base/core/java/android/os/Build.java did.
-inline bool isUserDebugBuild() {
-    return (android::base::GetProperty("ro.build.type", "user") == "userdebug");
-}
-
 inline bool isDoHEnabled() {
-    return android::net::Experiments::getInstance()->getFlag("doh", 0);
+    static bool isAtLeastT = android::modules::sdklevel::IsAtLeastT();
+    return android::net::Experiments::getInstance()->getFlag("doh", isAtLeastT ? 1 : 0);
 }
